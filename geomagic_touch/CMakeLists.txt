@@ -32,7 +32,7 @@ include_directories(
 
 add_message_files(
   DIRECTORY msg
-  FILES EndEffectorRelative.msg
+  FILES EndEffectorRelative.msg ForceCommand.msg
 )
 
 generate_messages(
