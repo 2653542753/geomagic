@@ -23,13 +23,16 @@ find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
 )
 
+find_package(Eigen3 REQUIRED)
+
 include_directories(
   ${catkin_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIR}
 )
 
 add_message_files(
   DIRECTORY msg
-  FILES PhantomButtonEvent.msg OmniFeedback.msg
+  FILES EndEffectorRelative.msg
 )
 
 generate_messages(
