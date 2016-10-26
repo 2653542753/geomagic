@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>geomagic_description</name>
+  <version>0.1.0</version>
+  <description>The geomagic_description package</description>
+  <maintainer email="fsuarez6@gmail.com">Francisco Suarez-Ruiz</maintainer>
+  <license>BSD</license>
+
+  <url type="website">https://github.com/fsuarez6/phantom_omni</url>
+  <url type="repository">https://github.com/fsuarez6/phantom_omni</url>
+
+  <author>Francisco Suarez-Ruiz</author>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <depend>urdf</depend>
+
+</package>

@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<package format="2">
+    <name>geomagic</name>
+    <version>0.1.0</version>
+    <description>Package for interfacing Geomagic haptic devices with ROS</description>
+    <maintainer email="kils@mmmi.sdu.dk">Kim Lindberg Schwaner</maintainer>
+    <license>LGPLv3</license>
+    <!-- <url type="website"></url> -->
+
+    <buildtool_depend>catkin</buildtool_depend>
+
+    <exec_depend>geomagic_touch</exec_depend>
+    <exec_depend>geomagic_description</exec_depend>
+
+    <export>
+        <metapackage/>
+    </export>
+</package>

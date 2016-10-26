@@ -1,0 +1,14 @@
+<launch>
+
+    <node name="omni1" pkg="geomagic_touch" type="omni_node" output="screen">
+        <param name="omni_name" value="GeoTouchLeft" />
+    </node>
+
+    <node name="omni2" pkg="geomagic_touch" type="omni_node" output="screen">
+        <param name="omni_name" value="GeoTouchRight" />
+    </node>
+<!--
+    <param name="robot_description" textfile="$(find geomagic_description)/urdf/omni.urdf" />
+    <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" output="screen" /> -->
+</launch>
+

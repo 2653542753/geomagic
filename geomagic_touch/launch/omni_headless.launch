@@ -1,0 +1,6 @@
+<launch>
+    <node name="omni1" pkg="geomagic_touch" type="omni_node" output="screen">
+        <param name="omni_name" value="GeoTouchLeft" />
+    </node>
+</launch>
+
