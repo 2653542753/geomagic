@@ -1,6 +1,7 @@
-#include "geomagic_touch/EndEffectorRelative.h"
-#include "geomagic_touch/ForceCommand.h"
+#include "geomagic_touch/TouchState.h"
 #include "sensor_msgs/JointState.h"
+#include "geometry_msgs/WrenchStamped.h"
+#include "tf2_eigen/tf2_eigen.h"
 #include "ros/ros.h"
 
 #include <HD/hd.h>
@@ -13,14 +14,14 @@
 #include <mutex>
 #include <thread>
 
-struct OmniState
+struct TouchState
 {
     enum class ButtonState
     {
         RELEASED, PRESSED
     };
 
-    OmniState()
+    TouchState()
     {
         transform.setIdentity();
         twist.setZero();
@@ -48,9 +49,9 @@ struct OmniState
     std::mutex mutex;
 };
 
-struct OmniCommand
+struct ForceCommand
 {
-    OmniCommand()
+    ForceCommand()
     {
         wrench.setZero();
     }
@@ -65,8 +66,8 @@ struct OmniCommand
 };
 
 int g_calibration_style;
-OmniState g_omni_state;
-OmniCommand g_omni_cmd;
+TouchState g_omni_state;
+ForceCommand g_omni_cmd;
 
 // Updates the local omni state object
 HDCallbackCode omniStateCallback(void *)
@@ -94,11 +95,11 @@ HDCallbackCode omniStateCallback(void *)
     //      HD_CURRENT_GIMBAL_TORQUE on 6DOF devices.
     // For now, just set linear force (Cartesian space).
     hdSetDoublev(HD_CURRENT_FORCE, g_omni_cmd.wrench.data());
-    // hdSetDoublev(HD_CURRENT_TORQUE, g_omni_cmd.wrench.data() + 3); // Deprecated
+    hdSetDoublev(HD_CURRENT_TORQUE, g_omni_cmd.wrench.data() + 3); // Deprecated
     hdEndFrame(hdGetCurrentDevice());
 
-    g_omni_state.buttons[0] = (buttons & HD_DEVICE_BUTTON_1) ? OmniState::ButtonState::PRESSED : OmniState::ButtonState::RELEASED;
-    g_omni_state.buttons[1] = (buttons & HD_DEVICE_BUTTON_2) ? OmniState::ButtonState::PRESSED : OmniState::ButtonState::RELEASED;
+    g_omni_state.buttons[0] = (buttons & HD_DEVICE_BUTTON_1) ? TouchState::ButtonState::PRESSED : TouchState::ButtonState::RELEASED;
+    g_omni_state.buttons[1] = (buttons & HD_DEVICE_BUTTON_2) ? TouchState::ButtonState::PRESSED : TouchState::ButtonState::RELEASED;
 
     // Scale mm to meters
     g_omni_state.transform.translation() *= 0.01;
@@ -116,7 +117,7 @@ HDCallbackCode omniStateCallback(void *)
 }
 
 // Sets force command
-void setForceCmd(geomagic_touch::ForceCommand::ConstPtr const &msg)
+void setForceCmd(geometry_msgs::WrenchStamped::ConstPtr const &msg)
 {
     std::lock_guard<std::mutex> lk(g_omni_cmd.mutex);
     g_omni_cmd.wrench[0] = msg->wrench.force.x;
@@ -127,7 +128,7 @@ void setForceCmd(geomagic_touch::ForceCommand::ConstPtr const &msg)
     g_omni_cmd.wrench[5] = msg->wrench.torque.z;
 }
 
-sensor_msgs::JointState makeJointStateMsg(OmniState &omni_state)
+sensor_msgs::JointState makeJointStateMsg(TouchState &state)
 {
     sensor_msgs::JointState msg;
     msg.header.stamp = ros::Time::now();
@@ -141,21 +142,46 @@ sensor_msgs::JointState makeJointStateMsg(OmniState &omni_state)
     msg.name[4] = "pitch";
     msg.name[5] = "roll";
 
-    std::lock_guard<std::mutex> lk(omni_state.mutex);
+    std::lock_guard<std::mutex> lk(state.mutex);
 
     // TODO review these offsets
-    msg.position[0] = -omni_state.joints[0];
-    msg.position[1] = omni_state.joints[1];
-    msg.position[2] = omni_state.joints[2] - omni_state.joints[1];
-    msg.position[3] = -omni_state.joints[3] + M_PI;
-    msg.position[4] = -omni_state.joints[4] - 3 * M_PI / 4;
-    msg.position[5] = omni_state.joints[5] + M_PI;
+    msg.position[0] = -state.joints[0];
+    msg.position[1] = state.joints[1];
+    msg.position[2] = state.joints[2] - state.joints[1];
+    msg.position[3] = -state.joints[3] + M_PI;
+    msg.position[4] = -state.joints[4] - 3 * M_PI / 4;
+    msg.position[5] = state.joints[5] + M_PI;
 
     return msg;
 }
 
-// TODO this is hax'y
-void cheat(Eigen::Affine3d const &tf, Eigen::Quaterniond &rot_incr, Eigen::Vector3d &pos_incr)
+geomagic_touch::TouchState makeTouchStateMsg(TouchState &state)
+{
+    geomagic_touch::TouchState msg;
+    msg.header.stamp = ros::Time::now();
+    msg.header.frame_id = "geomagic_touch_base";
+    msg.buttons.resize(2);
+
+    std::lock_guard<std::mutex> lk(state.mutex);
+    msg.buttons[0] = (state.buttons[0] == TouchState::ButtonState::PRESSED) ? 1 : 0;
+    msg.buttons[1] = (state.buttons[1] == TouchState::ButtonState::PRESSED) ? 1 : 0;
+
+    msg.pose.position.x = state.transform.translation().x();
+    msg.pose.position.y = state.transform.translation().y();
+    msg.pose.position.z = state.transform.translation().z();
+
+    Eigen::Quaterniond rot(state.transform.rotation());
+    msg.pose.orientation.x = rot.x();
+    msg.pose.orientation.y = rot.y();
+    msg.pose.orientation.z = rot.z();
+    msg.pose.orientation.w = rot.w();
+
+    return msg;
+}
+
+// FIXME
+// Frame increments in "ITP" frame for the Raven
+void cheat_itp(Eigen::Affine3d const &tf, Eigen::Quaterniond &rot_incr, Eigen::Vector3d &pos_incr)
 {
     static Eigen::Vector3d pos_prev(0, 0, 0);
     static Eigen::Quaterniond rot_prev = Eigen::Quaterniond::Identity();
@@ -180,19 +206,19 @@ void cheat(Eigen::Affine3d const &tf, Eigen::Quaterniond &rot_incr, Eigen::Vecto
     rot_prev = rot_curr;
 }
 
-geomagic_touch::EndEffectorRelative makeEndEffectorRelativeMsg(OmniState &omni_state)
+geomagic_touch::TouchState makeEndEffectorRelativeMsg(TouchState &state)
 {
-    geomagic_touch::EndEffectorRelative msg;
+    geomagic_touch::TouchState msg;
     msg.header.stamp = ros::Time::now();
     msg.buttons.resize(2);
 
-    std::lock_guard<std::mutex> lk(omni_state.mutex);
-    msg.buttons[0] = (omni_state.buttons[0] == OmniState::ButtonState::PRESSED) ? 1 : 0;
-    msg.buttons[1] = (omni_state.buttons[1] == OmniState::ButtonState::PRESSED) ? 1 : 0;
+    std::lock_guard<std::mutex> lk(state.mutex);
+    msg.buttons[0] = (state.buttons[0] == TouchState::ButtonState::PRESSED) ? 1 : 0;
+    msg.buttons[1] = (state.buttons[1] == TouchState::ButtonState::PRESSED) ? 1 : 0;
 
     Eigen::Quaterniond rot_incr;
     Eigen::Vector3d pos_incr;
-    cheat(omni_state.transform, rot_incr, pos_incr);
+    cheat_itp(state.transform, rot_incr, pos_incr);
 
     msg.pose.position.x = pos_incr.x();
     msg.pose.position.y = pos_incr.y();
@@ -260,7 +286,8 @@ int main(int argc, char **argv)
     std::string name = nh_private.param<std::string>("omni_name", "omni1");
 
     ros::Publisher pub_joint_state = nh.advertise<sensor_msgs::JointState>("joint_states", 1);
-    ros::Publisher pub_relative_incr = nh.advertise<geomagic_touch::EndEffectorRelative>("increment_itp", 1);
+    ros::Publisher pub_state = nh.advertise<geomagic_touch::TouchState>("touch_state", 1);
+    ros::Publisher pub_relative_incr = nh.advertise<geomagic_touch::TouchState>("increment_itp", 1);
     ros::Subscriber sub_force_cmd = nh.subscribe("force_command", 1, setForceCmd);
 
     HDErrorInfo error_info;
@@ -294,6 +321,7 @@ int main(int argc, char **argv)
 
         // Publish current omni state
         pub_joint_state.publish(makeJointStateMsg(g_omni_state));
+        pub_state.publish(makeTouchStateMsg(g_omni_state));
         pub_relative_incr.publish(makeEndEffectorRelativeMsg(g_omni_state));
 
         ros::spinOnce(); // Process waiting callbacks
