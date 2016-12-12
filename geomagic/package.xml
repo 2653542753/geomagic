@@ -4,7 +4,7 @@
     <version>0.1.0</version>
     <description>Package for interfacing Geomagic haptic devices with ROS</description>
     <maintainer email="kils@mmmi.sdu.dk">Kim Lindberg Schwaner</maintainer>
-    <license>LGPLv3</license>
+    <license>BSD</license>
     <!-- <url type="website"></url> -->
 
     <buildtool_depend>catkin</buildtool_depend>
