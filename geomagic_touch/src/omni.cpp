@@ -1,7 +1,6 @@
 #include "geomagic_touch/TouchState.h"
 #include "sensor_msgs/JointState.h"
 #include "geometry_msgs/WrenchStamped.h"
-#include "tf2_eigen/tf2_eigen.h"
 #include "ros/ros.h"
 
 #include <HD/hd.h>
@@ -162,20 +161,30 @@ geomagic_touch::TouchState makeTouchStateMsg(TouchState &state)
 
     std::lock_guard<std::mutex> lk(state.mutex);
     msg.header.stamp = ros::Time::now();
-    msg.header.frame_id = "geomagic_touch_base";
 
+    // Buttons
     msg.buttons[0] = (state.buttons[0] == TouchState::ButtonState::PRESSED) ? 1 : 0;
     msg.buttons[1] = (state.buttons[1] == TouchState::ButtonState::PRESSED) ? 1 : 0;
 
+    // Pose
+    msg.header.frame_id = "geomagic_touch_base";
     msg.pose.position.x = state.transform.translation().x();
     msg.pose.position.y = state.transform.translation().y();
     msg.pose.position.z = state.transform.translation().z();
-
     Eigen::Quaterniond rot(state.transform.rotation());
     msg.pose.orientation.x = rot.x();
     msg.pose.orientation.y = rot.y();
     msg.pose.orientation.z = rot.z();
     msg.pose.orientation.w = rot.w();
+
+    // Twist
+    msg.child_frame_id = "geomagic_touch_base";
+    msg.twist.linear.x = state.twist[0];
+    msg.twist.linear.y = state.twist[1];
+    msg.twist.linear.z = state.twist[2];
+    msg.twist.angular.x = state.twist[3];
+    msg.twist.angular.y = state.twist[4];
+    msg.twist.angular.z = state.twist[5];
 
     return msg;
 }

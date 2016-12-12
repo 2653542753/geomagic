@@ -1,27 +1,15 @@
-phantom_omni
-============
+# geomagic_touch
 
-ROS Node for Sensable Phantom Omni devices
-
-Requires the [omni_description](https://github.com/danepowell/omni_description) package. 
+ROS package for interfacing Geomagic haptic devices with ROS.
 
 Parameters:
 - ~omni_name (default: omni1)
 
 Publishes:
-- OMNI_NAME_joint_states (sensor_msgs/JointState): The state of each of the omni's joints.
-- OMNI_NAME_button (phantom_omni/PhantomButtonEvent): Events for the grey and white buttons.
+- joint_states (sensor_msgs/JointState): The joint angles of the device.
+- touch_state (phantom_omni/TouchState): The pose, twist and button state of the device.
 
 Subscribes:
-- OMNI_NAME_force_feedback (phantom_omni/OmniFeedback): Force feedback to be displayed on the omni. Takes a force and a position. If you simultaneously click the grey and white buttons, the omni will 'lock' to the position.
+- force_command (geometry_msgs/WrenchStamped): Force feedback to be displayed on the omni.
 
-This is based on the [original phantom_omni package](http://www.ros.org/wiki/phantom_omni). However, it has several advantages:
-- Catkinized build system
-- Compatibility with ROS Groovy
-- Uses URDF description of Omni and the robot_state_publisher instead of hardcoded transforms.
-- Improved auto-calibration
-- Streamlined code / organization / bug fixes.
-- Defaults to gravity compensation mode (instead of locking to the 'zero' position).
-
-To see it in action, simply:
-roslaunch phantom_omni omni.launch
+This is based on the [original phantom_omni package](http://www.ros.org/wiki/phantom_omni).
