@@ -7,7 +7,7 @@ Parameters:
 
 Publishes:
 - joint_states (sensor_msgs/JointState): The joint angles of the device.
-- touch_state (phantom_omni/TouchState): The pose, twist and button state of the device.
+- touch_state (geomagic_touch/TouchState): The pose, twist and button state of the device.
 
 Subscribes:
 - force_command (geometry_msgs/WrenchStamped): Force feedback to be displayed on the omni.
