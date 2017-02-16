@@ -265,7 +265,7 @@ void calibration()
 
 int main(int argc, char *argv[])
 {
-    ros::init(argc, argv, "omni_node");
+    ros::init(argc, argv, "geotouch_node");
     ros::NodeHandle nh;
     ros::NodeHandle nh_private("~");
 
