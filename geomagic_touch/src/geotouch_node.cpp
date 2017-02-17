@@ -27,9 +27,12 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "geomagic_touch/TouchState.h"
+#include "geomagic_touch/ButtonEvent.h"
 #include "sensor_msgs/JointState.h"
+#include "geometry_msgs/PoseStamped.h"
+#include "geometry_msgs/TwistStamped.h"
 #include "geometry_msgs/WrenchStamped.h"
+
 #include "ros/ros.h"
 
 #include <HD/hd.h>
@@ -37,31 +40,47 @@
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
 
+#include <boost/lockfree/spsc_queue.hpp>
+
 #include <array>
 #include <cmath>
-#include <mutex>
 #include <thread>
+
+/*
+  If this program seems to perform badly, it is probably because
+  libPhantomIOLib42 seemingly SHA-2xx hashes data packages.
+
+  TODO:
+   * Frame ID's for output poses/twists.
+   * Angular velocities of the device seems to always be zero. Is that right?
+   * Test setting force/torque of the device.
+   * ROS service to turn on/off force feedback.
+   * Review joint angle offsets. Perhaps defined them in URDF description instead.
+*/
+
+enum class ButtonType { GREY, WHITE };
+enum class ButtonState { RELEASED, PRESSED };
+
+struct ButtonEvent
+{
+    ButtonType type;
+    ButtonState event;
+};
 
 struct TouchState
 {
-    enum class ButtonState
-    {
-        RELEASED, PRESSED
-    };
-
     TouchState()
     {
         transform.setIdentity();
         twist.setZero();
         joints.fill(0);
-        buttons.fill(ButtonState::RELEASED);
     }
 
     // Overloads 'new' so that it generates 16-bytes-aligned pointers
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-    // Transform of the end-effector (translation in m)
-    // TODO with reference to where??
+    // Transform of the end-effector (translation in m), seen in the base frame
+    // of the Touch device.
     Eigen::Affine3d transform;
 
     // End-effector linear+angular velocity, Cartesian space (m/s or rad/s)
@@ -70,11 +89,6 @@ struct TouchState
     // Joint angles, Joint-space (rad)
     // Waist, shoulder, elbow, yaw, pitch, roll
     std::array<double, 6> joints;
-
-    // Button states
-    std::array<ButtonState, 2> buttons;
-
-    std::mutex mutex;
 };
 
 struct ForceCommand
@@ -89,20 +103,19 @@ struct ForceCommand
 
     // Force (linear) and torque (angular) to apply on the device (N or Nm)
     Eigen::Matrix<double, 6, 1> wrench;
-
-    std::mutex mutex;
 };
 
 int g_calibration_style;
-TouchState g_omni_state;
-ForceCommand g_omni_cmd;
+std::map<ButtonType, ButtonState> g_button_states;
+std::map<ButtonType, ButtonState> g_button_states_prev;
 
-// Updates the local omni state object
-HDCallbackCode omniStateCallback(void *)
+boost::lockfree::spsc_queue<TouchState, boost::lockfree::capacity<1>> g_touch_states;
+boost::lockfree::spsc_queue<ForceCommand, boost::lockfree::capacity<1>> g_force_commands;
+boost::lockfree::spsc_queue<ButtonEvent, boost::lockfree::capacity<24>> g_button_events;
+
+HDCallbackCode syncTouchState(void *)
 {
-    // Begins a frame in which the device state is guaranteed to be consistent
-    std::lock_guard<std::mutex> lk_state(g_omni_state.mutex);
-    std::lock_guard<std::mutex> lk_cmd(g_omni_cmd.mutex);
+    // Begins a frame in which the device state is guaranteed to be consistent.
     hdBeginFrame(hdGetCurrentDevice());
 
     if (hdCheckCalibration() == HD_CALIBRATION_NEEDS_UPDATE) {
@@ -110,69 +123,104 @@ HDCallbackCode omniStateCallback(void *)
         hdUpdateCalibration(g_calibration_style);
     }
 
-    // Get most current device state
-    hdGetDoublev(HD_CURRENT_TRANSFORM, g_omni_state.transform.data()); // (translation in mm)
-    hdGetDoublev(HD_CURRENT_VELOCITY, g_omni_state.twist.data()); // (mm/s)
-    hdGetDoublev(HD_CURRENT_ANGULAR_VELOCITY, g_omni_state.twist.data() + 3); // (rad/s)
-    hdGetDoublev(HD_CURRENT_JOINT_ANGLES, g_omni_state.joints.data()); // Waist, shoulder, elbow (rad)
-    hdGetDoublev(HD_CURRENT_GIMBAL_ANGLES, g_omni_state.joints.data() + 3); // Yaw, pitch, roll (rad)
+    TouchState touch_state;
+
+    // Transform (translation in mm)
+    hdGetDoublev(HD_CURRENT_TRANSFORM, touch_state.transform.data());
+    touch_state.transform.translation() *= 0.01; // Scale mm to meters
+
+    // Linear and angular velocities
+    hdGetDoublev(HD_CURRENT_VELOCITY, touch_state.twist.data()); // (mm/s)
+    hdGetDoublev(HD_CURRENT_ANGULAR_VELOCITY, touch_state.twist.data() + 3); // (rad/s)
+    touch_state.twist.block<3, 1>(0, 0) *= 0.01; // Scale mm to meters
+
+    // Joint angles
+    hdGetDoublev(HD_CURRENT_JOINT_ANGLES, touch_state.joints.data()); // Waist, shoulder, elbow (rad)
+    hdGetDoublev(HD_CURRENT_GIMBAL_ANGLES, touch_state.joints.data() + 3); // Yaw, pitch, roll (rad)
+
+    // Buttons
     int buttons = 0;
     hdGetIntegerv(HD_CURRENT_BUTTONS, &buttons);
+    g_button_states[ButtonType::GREY] = (buttons & HD_DEVICE_BUTTON_1) ? ButtonState::PRESSED : ButtonState::RELEASED;
+    g_button_states[ButtonType::WHITE] = (buttons & HD_DEVICE_BUTTON_2) ? ButtonState::PRESSED : ButtonState::RELEASED;
 
-    // TODO set joint torques using HD_CURRENT_JOINT_TORQUE and
-    //      HD_CURRENT_GIMBAL_TORQUE on 6DOF devices.
+    // Set force feedback torque.
+    // TODO: Set joint torques using HD_CURRENT_JOINT_TORQUE and
+    //       HD_CURRENT_GIMBAL_TORQUE on 6DOF devices.
     // For now, just set linear force (Cartesian space).
-    hdSetDoublev(HD_CURRENT_FORCE, g_omni_cmd.wrench.data());
-    hdSetDoublev(HD_CURRENT_TORQUE, g_omni_cmd.wrench.data() + 3); // Deprecated
+    if (g_force_commands.read_available() > 0) {
+        ForceCommand const &fcmd = g_force_commands.front();
+        hdSetDoublev(HD_CURRENT_FORCE, fcmd.wrench.data());
+        hdSetDoublev(HD_CURRENT_TORQUE, fcmd.wrench.data() + 3); // Deprecated
+        g_force_commands.pop();
+    }
+
     hdEndFrame(hdGetCurrentDevice());
 
-    g_omni_state.buttons[0] = (buttons & HD_DEVICE_BUTTON_1) ? TouchState::ButtonState::PRESSED : TouchState::ButtonState::RELEASED;
-    g_omni_state.buttons[1] = (buttons & HD_DEVICE_BUTTON_2) ? TouchState::ButtonState::PRESSED : TouchState::ButtonState::RELEASED;
+    // Check for possible errors.
+    HDErrorInfo error_info = hdGetError();
 
-    // Scale mm to meters
-    g_omni_state.transform.translation() *= 0.01;
-    g_omni_state.twist.block<3, 1>(0, 0) *= 0.01;
-
-    HDErrorInfo error_info;
-
-    if (HD_DEVICE_ERROR(error_info = hdGetError())) {
+    if (error_info.errorCode != HD_SUCCESS) {
         ROS_ERROR("omniStateCallback error: %s", hdGetErrorString(error_info.errorCode));
         return HD_CALLBACK_DONE;
     }
+
+    // Queue the (most recent) touch state.
+    if (g_touch_states.write_available() == 0) {
+        g_touch_states.pop();
+    }
+
+    g_touch_states.push(touch_state);
+
+    // Queue button events.
+    for (auto btype : {ButtonType::GREY, ButtonType::WHITE}) {
+        if (g_button_states_prev[btype] == ButtonState::PRESSED && g_button_states[btype] == ButtonState::RELEASED) {
+            // Pressed -> released transition
+            g_button_events.push({btype, ButtonState::RELEASED});
+        } else if (g_button_states_prev[btype] == ButtonState::RELEASED && g_button_states[btype] == ButtonState::PRESSED) {
+            // Released -> pressed transition
+            g_button_events.push({btype, ButtonState::PRESSED});
+        }
+    }
+
+    g_button_states_prev = g_button_states;
 
     // Loop indefinitely
     return HD_CALLBACK_CONTINUE;
 }
 
-// Sets force command
-void setForceCmd(geometry_msgs::WrenchStamped::ConstPtr const &msg)
+void onForceCommand(geometry_msgs::WrenchStamped::ConstPtr const &msg)
 {
-    std::lock_guard<std::mutex> lk(g_omni_cmd.mutex);
-    g_omni_cmd.wrench[0] = msg->wrench.force.x;
-    g_omni_cmd.wrench[1] = msg->wrench.force.y;
-    g_omni_cmd.wrench[2] = msg->wrench.force.z;
-    g_omni_cmd.wrench[3] = msg->wrench.torque.x;
-    g_omni_cmd.wrench[4] = msg->wrench.torque.y;
-    g_omni_cmd.wrench[5] = msg->wrench.torque.z;
+    ForceCommand fcmd;
+    fcmd.wrench[0] = msg->wrench.force.x;
+    fcmd.wrench[1] = msg->wrench.force.y;
+    fcmd.wrench[2] = msg->wrench.force.z;
+    fcmd.wrench[3] = msg->wrench.torque.x;
+    fcmd.wrench[4] = msg->wrench.torque.y;
+    fcmd.wrench[5] = msg->wrench.torque.z;
+
+    // Make sure the most recent ForceCommand is queued.
+    if (g_force_commands.write_available() == 0) {
+        g_force_commands.pop();
+    }
+
+    g_force_commands.push(fcmd);
 }
 
-sensor_msgs::JointState makeJointStateMsg(TouchState &state)
+sensor_msgs::JointState makeJointStateMsg(TouchState const &state)
 {
     sensor_msgs::JointState msg;
-    msg.name.resize(6);
-    msg.position.resize(6);
-
-    msg.name[0] = "waist";
-    msg.name[1] = "shoulder";
-    msg.name[2] = "elbow";
-    msg.name[3] = "yaw";
-    msg.name[4] = "pitch";
-    msg.name[5] = "roll";
-
-    std::lock_guard<std::mutex> lk(state.mutex);
     msg.header.stamp = ros::Time::now();
 
-    // TODO review these offsets
+    msg.name.resize(6);
+    msg.name[0] = "geotouch_waist";
+    msg.name[1] = "geotouch_shoulder";
+    msg.name[2] = "geotouch_elbow";
+    msg.name[3] = "geotouch_yaw";
+    msg.name[4] = "geotouch_pitch";
+    msg.name[5] = "geotouch_roll";
+
+    msg.position.resize(6);
     msg.position[0] = -state.joints[0];
     msg.position[1] = state.joints[1];
     msg.position[2] = state.joints[2] - state.joints[1];
@@ -183,37 +231,55 @@ sensor_msgs::JointState makeJointStateMsg(TouchState &state)
     return msg;
 }
 
-geomagic_touch::TouchState makeTouchStateMsg(TouchState &state)
+geometry_msgs::PoseStamped makePoseMsg(TouchState const &state)
 {
-    geomagic_touch::TouchState msg;
-    msg.buttons.resize(2);
-
-    std::lock_guard<std::mutex> lk(state.mutex);
+    geometry_msgs::PoseStamped msg;
     msg.header.stamp = ros::Time::now();
-
-    // Buttons
-    msg.buttons[0] = (state.buttons[0] == TouchState::ButtonState::PRESSED) ? 1 : 0;
-    msg.buttons[1] = (state.buttons[1] == TouchState::ButtonState::PRESSED) ? 1 : 0;
-
-    // Pose
-    msg.header.frame_id = "geomagic_touch_base";
     msg.pose.position.x = state.transform.translation().x();
     msg.pose.position.y = state.transform.translation().y();
     msg.pose.position.z = state.transform.translation().z();
-    Eigen::Quaterniond rot(state.transform.rotation());
-    msg.pose.orientation.x = rot.x();
-    msg.pose.orientation.y = rot.y();
-    msg.pose.orientation.z = rot.z();
-    msg.pose.orientation.w = rot.w();
+    Eigen::Quaterniond rotation(state.transform.rotation());
+    msg.pose.orientation.x = rotation.x();
+    msg.pose.orientation.y = rotation.y();
+    msg.pose.orientation.z = rotation.z();
+    msg.pose.orientation.w = rotation.w();
+    return msg;
+}
 
-    // Twist
-    msg.child_frame_id = "geomagic_touch_base";
-    msg.twist.linear.x = state.twist[0];
-    msg.twist.linear.y = state.twist[1];
-    msg.twist.linear.z = state.twist[2];
-    msg.twist.angular.x = state.twist[3];
-    msg.twist.angular.y = state.twist[4];
-    msg.twist.angular.z = state.twist[5];
+geometry_msgs::TwistStamped makeTwistMsg(TouchState const &state)
+{
+    geometry_msgs::TwistStamped msg;
+    msg.header.stamp = ros::Time::now();
+    msg.twist.linear.x = state.twist(0);
+    msg.twist.linear.y = state.twist(1);
+    msg.twist.linear.z = state.twist(2);
+    msg.twist.angular.x = state.twist(3);
+    msg.twist.angular.y = state.twist(4);
+    msg.twist.angular.z = state.twist(5);
+    return msg;
+}
+
+geomagic_touch::ButtonEvent makeButtonEventMsg(ButtonEvent const &event)
+{
+    geomagic_touch::ButtonEvent msg;
+
+    switch (event.type) {
+    case ButtonType::GREY:
+        msg.button = geomagic_touch::ButtonEvent::BUTTON_GREY;
+        break;
+    case ButtonType::WHITE:
+        msg.button = geomagic_touch::ButtonEvent::BUTTON_WHITE;
+        break;
+    }
+
+    switch (event.event) {
+    case ButtonState::PRESSED:
+        msg.event = geomagic_touch::ButtonEvent::EVENT_PRESSED;
+        break;
+    case ButtonState::RELEASED:
+        msg.event = geomagic_touch::ButtonEvent::EVENT_RELEASED;
+        break;
+    }
 
     return msg;
 }
@@ -252,9 +318,9 @@ void calibration()
         }
 
         hdUpdateCalibration(g_calibration_style);
-        HDErrorInfo error_info;
+        HDErrorInfo error_info = hdGetError();
 
-        if (HD_DEVICE_ERROR(error_info = hdGetError())) {
+        if (error_info.errorCode != HD_SUCCESS) {
             ROS_ERROR("Calibration failed: %s", hdGetErrorString(error_info.errorCode));
             return;
         }
@@ -270,11 +336,11 @@ int main(int argc, char *argv[])
     ros::NodeHandle nh_private("~");
 
     // Initialize omni device
-    std::string name = nh_private.param<std::string>("omni_name", "omni1");
-    HDErrorInfo error_info;
+    std::string name = nh_private.param<std::string>("name", "omni1");
     HHD dev_handle = hdInitDevice(name.c_str());
+    HDErrorInfo error_info = hdGetError();
 
-    if (HD_DEVICE_ERROR(error_info = hdGetError())) {
+    if (error_info.errorCode != HD_SUCCESS) {
         ROS_ERROR("hdInitDevice failed: %s", hdGetErrorString(error_info.errorCode));
         return EXIT_FAILURE;
     }
@@ -287,29 +353,42 @@ int main(int argc, char *argv[])
     // Enable force output (turn on all motors)
     hdEnable(HD_FORCE_OUTPUT);
 
-    // Start omni scheduler in its own thread
-    hdSetSchedulerRate(1000);
-    HDSchedulerHandle sched_handle = hdScheduleAsynchronous(omniStateCallback, nullptr, HD_DEFAULT_SCHEDULER_PRIORITY);
+    // Start touch scheduler in its own thread
+    hdSetSchedulerRate(1000); // Should be equal to or higher than the ROS loop rate.
+    HDSchedulerHandle sched_handle = hdScheduleAsynchronous(syncTouchState, nullptr, HD_DEFAULT_SCHEDULER_PRIORITY);
     hdStartScheduler();
+    error_info = hdGetError();
 
-    if (HD_DEVICE_ERROR(error_info = hdGetError())) {
+    if (error_info.errorCode != HD_SUCCESS) {
         ROS_ERROR("hdStartScheduler failed: %s", hdGetErrorString(error_info.errorCode));
         hdDisableDevice(dev_handle);
         return EXIT_FAILURE;
     }
 
     // Process ROS events in this thread
-    ros::Publisher pub_joint_state = nh.advertise<sensor_msgs::JointState>("joint_states", 1);
-    ros::Publisher pub_state = nh.advertise<geomagic_touch::TouchState>("touch_state", 1);
-    ros::Subscriber sub_force_cmd = nh.subscribe("force_command", 1, setForceCmd);
-    ros::Rate loop_rate(1000);
+    ros::Publisher pub_joint_states = nh.advertise<sensor_msgs::JointState>("joint_states", 1);
+    ros::Publisher pub_poses = nh.advertise<geometry_msgs::PoseStamped>("pose", 1);
+    ros::Publisher pub_twists = nh.advertise<geometry_msgs::TwistStamped>("twist", 1);
+    ros::Publisher pub_button_events = nh.advertise<geomagic_touch::ButtonEvent>("button_event", 24);
+    ros::Subscriber sub_force_cmds = nh.subscribe("force_command", 1, onForceCommand);
+    ros::Rate loop_rate(500);
 
     while (nh.ok()) {
         loop_rate.sleep();
 
-        // Publish current omni state
-        pub_joint_state.publish(makeJointStateMsg(g_omni_state));
-        pub_state.publish(makeTouchStateMsg(g_omni_state));
+        if (g_touch_states.read_available() > 0) {
+            TouchState &touch_state = g_touch_states.front();
+            pub_joint_states.publish(makeJointStateMsg(touch_state));
+            pub_poses.publish(makePoseMsg(touch_state));
+            pub_twists.publish(makeTwistMsg(touch_state));
+            g_touch_states.pop();
+        }
+
+        while (g_button_events.read_available() > 0) {
+            ButtonEvent &btn_event = g_button_events.front();
+            pub_button_events.publish(makeButtonEventMsg(btn_event));
+            g_button_events.pop();
+        }
 
         ros::spinOnce(); // Process waiting callbacks
     }

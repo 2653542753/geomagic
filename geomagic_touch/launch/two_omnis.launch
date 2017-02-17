@@ -1,14 +1,15 @@
 <launch>
+  <node ns="left" name="geotouch" pkg="geomagic_touch" type="geotouch_node" output="screen">
+    <param name="name" value="GeoTouchLeft" />
+  </node>
 
-    <node name="omni1" pkg="geomagic_touch" type="omni_node" output="screen">
-        <param name="omni_name" value="GeoTouchLeft" />
-    </node>
+  <node ns="right" name="geotouch" pkg="geomagic_touch" type="geotouch_node" output="screen">
+    <param name="name" value="GeoTouchRight" />
+  </node>
 
-    <node name="omni2" pkg="geomagic_touch" type="omni_node" output="screen">
-        <param name="omni_name" value="GeoTouchRight" />
-    </node>
-<!--
-    <param name="robot_description" textfile="$(find geomagic_description)/urdf/omni.urdf" />
-    <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" output="screen" /> -->
+  <!--
+  <param name="robot_description" textfile="$(find geomagic_description)/urdf/omni.urdf" />
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" output="screen" />
+  -->
 </launch>
 

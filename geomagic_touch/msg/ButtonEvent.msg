@@ -1,0 +1,8 @@
+int32 EVENT_RELEASED=0
+int32 EVENT_PRESSED=1
+
+int32 BUTTON_GREY=0
+int32 BUTTON_WHITE=1
+
+int32 event
+int32 button
