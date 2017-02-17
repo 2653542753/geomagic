@@ -7,9 +7,9 @@ Parameters:
 
 Publishes:
 - joint_states (sensor_msgs/JointState): The joint angles of the device.
-- pose (geomagic_touch/TouchState): The pose of the device.
-- twist (geomagic_touch/TouchState): The twist of the device.
-- button_event (geomagic_touch/TouchState): Buttons events (pressed, released).
+- pose (geometry_msgs/PoseStamped): The pose of the device.
+- twist (geometry_msgs/TwistStamped): The twist of the device.
+- button_event (geomagic_touch/ButtonEvent): Buttons events (pressed, released).
 
 Subscribes:
 - force_command (geometry_msgs/WrenchStamped): Force feedback to be displayed on the device.
