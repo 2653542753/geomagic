@@ -69,13 +69,6 @@ struct ButtonEvent
 
 struct TouchState
 {
-    TouchState()
-    {
-        transform.setIdentity();
-        twist.setZero();
-        joints.fill(0);
-    }
-
     // Overloads 'new' so that it generates 16-bytes-aligned pointers
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
@@ -93,11 +86,6 @@ struct TouchState
 
 struct ForceCommand
 {
-    ForceCommand()
-    {
-        wrench.setZero();
-    }
-
     // Overloads 'new' so that it generates 16-bytes-aligned pointers
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
