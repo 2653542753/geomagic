@@ -51,7 +51,8 @@
   libPhantomIOLib42 seemingly SHA-2xx hashes data packages.
 
   TODO:
-   * Frame ID's for output poses/twists.
+   * Check frame ID's for output poses/twists - should they match URDF model, or
+     be different for geotouch_node instance launched?
    * Angular velocities of the device seems to always be zero. Is that right?
    * Test setting force/torque of the device.
    * ROS service to turn on/off force feedback.
@@ -223,6 +224,7 @@ geometry_msgs::PoseStamped makePoseMsg(TouchState const &state)
 {
     geometry_msgs::PoseStamped msg;
     msg.header.stamp = ros::Time::now();
+    msg.header.frame_id = "geotouch";
     msg.pose.position.x = state.transform.translation().x();
     msg.pose.position.y = state.transform.translation().y();
     msg.pose.position.z = state.transform.translation().z();
@@ -238,6 +240,7 @@ geometry_msgs::TwistStamped makeTwistMsg(TouchState const &state)
 {
     geometry_msgs::TwistStamped msg;
     msg.header.stamp = ros::Time::now();
+    msg.header.frame_id = "geotouch";
     msg.twist.linear.x = state.twist(0);
     msg.twist.linear.y = state.twist(1);
     msg.twist.linear.z = state.twist(2);
