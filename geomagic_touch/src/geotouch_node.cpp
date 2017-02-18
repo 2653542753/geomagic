@@ -28,6 +28,7 @@
 */
 
 #include "geomagic_touch/ButtonEvent.h"
+#include "geomagic_touch/SetForceOutput.h"
 #include "sensor_msgs/JointState.h"
 #include "geometry_msgs/PoseStamped.h"
 #include "geometry_msgs/TwistStamped.h"
@@ -55,7 +56,6 @@
      be different for geotouch_node instance launched?
    * Angular velocities of the device seems to always be zero. Is that right?
    * Test setting force/torque of the device.
-   * ROS service to turn on/off force feedback.
    * Review joint angle offsets. Perhaps defined them in URDF description instead.
 */
 
@@ -194,6 +194,18 @@ void onForceCommand(geometry_msgs::WrenchStamped::ConstPtr const &msg)
     }
 
     g_force_commands.push(fcmd);
+}
+
+bool setForceOutput(geomagic_touch::SetForceOutputRequest &req,
+                    geomagic_touch::SetForceOutputResponse &)
+{
+    if (req.enable_force_output) {
+        hdEnable(HD_FORCE_OUTPUT);
+    } else {
+        hdDisable(HD_FORCE_OUTPUT);
+    }
+
+    return true;
 }
 
 sensor_msgs::JointState makeJointStateMsg(TouchState const &state)
@@ -341,12 +353,9 @@ int main(int argc, char *argv[])
     // Choose calibration method, and calibrate if necessary
     calibration();
 
-    // Enable force output (turn on all motors)
-    hdEnable(HD_FORCE_OUTPUT);
-
     // Start touch scheduler in its own thread
     hdSetSchedulerRate(1000); // Should be equal to or higher than the ROS loop rate.
-    HDSchedulerHandle sched_handle = hdScheduleAsynchronous(syncTouchState, nullptr, HD_DEFAULT_SCHEDULER_PRIORITY);
+    HDSchedulerHandle sched_handle = hdScheduleAsynchronous(syncTouchState, nullptr, HD_MAX_SCHEDULER_PRIORITY);
     hdStartScheduler();
     error_info = hdGetError();
 
@@ -362,13 +371,14 @@ int main(int argc, char *argv[])
     ros::Publisher pub_twists = nh.advertise<geometry_msgs::TwistStamped>("twist", 1);
     ros::Publisher pub_button_events = nh.advertise<geomagic_touch::ButtonEvent>("button_event", 24);
     ros::Subscriber sub_force_cmds = nh.subscribe("force_command", 1, onForceCommand);
+    ros::ServiceServer srv_force_output = nh.advertiseService("set_force_output", setForceOutput);
     ros::Rate loop_rate(500);
 
     while (nh.ok()) {
         loop_rate.sleep();
 
         if (g_touch_states.read_available() > 0) {
-            TouchState &touch_state = g_touch_states.front();
+            TouchState const &touch_state = g_touch_states.front();
             pub_joint_states.publish(makeJointStateMsg(touch_state));
             pub_poses.publish(makePoseMsg(touch_state));
             pub_twists.publish(makeTwistMsg(touch_state));
@@ -376,7 +386,7 @@ int main(int argc, char *argv[])
         }
 
         while (g_button_events.read_available() > 0) {
-            ButtonEvent &btn_event = g_button_events.front();
+            ButtonEvent const &btn_event = g_button_events.front();
             pub_button_events.publish(makeButtonEventMsg(btn_event));
             g_button_events.pop();
         }
