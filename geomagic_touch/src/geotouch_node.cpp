@@ -100,7 +100,7 @@ std::map<ButtonType, ButtonState> g_button_states_prev;
 
 boost::lockfree::spsc_queue<TouchState, boost::lockfree::capacity<1>> g_touch_states;
 boost::lockfree::spsc_queue<ForceCommand, boost::lockfree::capacity<1>> g_force_commands;
-boost::lockfree::spsc_queue<ButtonEvent, boost::lockfree::capacity<24>> g_button_events;
+boost::lockfree::spsc_queue<ButtonEvent, boost::lockfree::capacity<10>> g_button_events;
 
 HDCallbackCode syncTouchState(void *)
 {
@@ -369,7 +369,7 @@ int main(int argc, char *argv[])
     ros::Publisher pub_joint_states = nh.advertise<sensor_msgs::JointState>("joint_states", 1);
     ros::Publisher pub_poses = nh.advertise<geometry_msgs::PoseStamped>("pose", 1);
     ros::Publisher pub_twists = nh.advertise<geometry_msgs::TwistStamped>("twist", 1);
-    ros::Publisher pub_button_events = nh.advertise<geomagic_touch::ButtonEvent>("button_event", 24);
+    ros::Publisher pub_button_events = nh.advertise<geomagic_touch::ButtonEvent>("button_event", 10);
     ros::Subscriber sub_force_cmds = nh.subscribe("force_command", 1, onForceCommand);
     ros::ServiceServer srv_force_output = nh.advertiseService("set_force_output", setForceOutput);
     ros::Rate loop_rate(500);
